@@ -2,6 +2,7 @@ import pandas as pd
 from dotenv import load_dotenv, find_dotenv
 import os
 import wrds
+import polars as pl
 
 def add_permco_to_news(financial_news_df, nrows=None):
     """
@@ -50,4 +51,50 @@ def add_permco_to_news(financial_news_df, nrows=None):
 
     return merged
 
+def add_permco_to_news_polars(financial_news_df, nrows=None) : 
+    if isinstance(financial_news_df, pd.DataFrame):
+        news = pl.from_pandas(financial_news_df)
+    elif isinstance(financial_news_df, pl.DataFrame):
+        news = financial_news_df.clone()
+    else:
+        raise TypeError("financial_news_df must be a pandas or Polars DataFrame")
+
+
+    financial_news_df = financial_news_df.with_columns(
+    pl.col("Date")
+      .str.replace(pattern=" UTC", value="")
+      .str.strptime(pl.Datetime, format="%Y-%m-%d %H:%M:%S", strict=False)
+      .cast(pl.Date)  # mark as UTC without shifting
+    )
+    news = (
+            financial_news_df.rename({"Stock_symbol": "ticker", "Date": "date"})
+                .with_columns([
+                    pl.col("ticker").str.to_uppercase().str.strip_chars(),
+                ])
+        )
+
+    load_dotenv(find_dotenv())
+    wrds_user = os.getenv("WRDS_USERNAME")
+    db = wrds.Connection(wrds_username=wrds_user, verbose=False)
+
+    # Note: your original used crsp.stocknames; we keep that for parity.
+    # (For time-aware mapping, prefer crsp.dsenames and include date ranges.)
+    stocknames_pd = db.raw_sql("""
+        SELECT permco, ticker
+        FROM crsp.stocknames
+        WHERE ticker IS NOT NULL
+    """)
+    
+    db.close()
+
+    stocknames = (
+        pl.from_pandas(stocknames_pd)
+          .with_columns(pl.col("ticker").str.to_uppercase().str.strip_chars())
+          .unique(subset=["ticker"], keep="first")
+    )
+
+   
+    out = news.join(stocknames, on="ticker", how="left")
+
+    return out
 

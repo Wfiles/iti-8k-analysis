@@ -8,6 +8,7 @@ from tqdm import tqdm
 import polars as pl
 import wrds
 from dotenv import load_dotenv, find_dotenv
+from src.merge_crsp_fnspid import add_permco_to_news_polars
 # Enable tqdm support for pandas apply
 tqdm.pandas()
 
@@ -140,3 +141,32 @@ def prepare_ITI_data(iti_csv_path: str) -> pd.DataFrame:
                  (pl.col("date") <= pl.col("nameendt")))
     )
     return out.select([pl.col("date"), pl.col("ITI(13D)"), pl.col("ITI(impatient)"), pl.col("ITI(patient)"), pl.col("ITI(insider)"), pl.col("ITI(short)"), pl.col("permco")])
+
+def process_final_dataset(news_csv_path: str, all_stocks_csv_path: str) -> pl.DataFrame: 
+    financial_news_df = pl.read_csv(
+    news_csv_path,
+    dtypes={
+        "news_date": pl.String,
+        "Article_title": pl.String,
+        "ticker": pl.String,
+        "Url": pl.String,
+        "Publisher": pl.String,
+        "Author": pl.String,   # price can be float32 to save RAM
+        "Article": pl.String,      # read as string, then cast robustly
+        "Lsa_summary": pl.String,
+        "Luhn_summary": pl.String,
+        "Textrank_summary": pl.String,
+        "Lexrank_summary": pl.String,
+        "permco": pl.Int32,
+    },
+    try_parse_dates=False,    # will parse "date", "namedt", "nameendt"
+    null_values=["", "NA", "NaN", "null", "."],  # typical CSV missings
+    )
+    df_with_permco = add_permco_to_news_polars(financial_news_df)
+
+    all_stocks = pl.read_csv(all_stocks_csv_path)
+    all_stocks = all_stocks.with_columns(pl.col("date").cast(pl.Date))
+    out = (df_with_permco.join(all_stocks, on=["permco", 'date'], how="right"))
+    df = out.select('date', 'permco', 'ret', 'prc', 'vol', 'on_rdq', 'vol_missing_flag', 'comnam', 'Article_title')
+
+    return df
