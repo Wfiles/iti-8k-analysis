@@ -8,6 +8,11 @@ from tqdm import tqdm
 import polars as pl
 import wrds
 from dotenv import load_dotenv, find_dotenv
+from sentence_transformers import SentenceTransformer
+import datetime as dt
+from sklearn.decomposition import PCA
+
+
 from src.merge_crsp_fnspid import add_permco_to_news_polars
 # Enable tqdm support for pandas apply
 tqdm.pandas()
@@ -142,7 +147,7 @@ def prepare_ITI_data(iti_csv_path: str) -> pd.DataFrame:
     )
     return out.select([pl.col("date"), pl.col("ITI(13D)"), pl.col("ITI(impatient)"), pl.col("ITI(patient)"), pl.col("ITI(insider)"), pl.col("ITI(short)"), pl.col("permco")])
 
-def process_final_dataset(news_csv_path: str, all_stocks_csv_path: str) -> pl.DataFrame: 
+def process_news_returns(news_csv_path: str, all_stocks_csv_path: str) -> pl.DataFrame: 
     financial_news_df = pl.read_csv(
     news_csv_path,
     dtypes={
@@ -163,10 +168,87 @@ def process_final_dataset(news_csv_path: str, all_stocks_csv_path: str) -> pl.Da
     null_values=["", "NA", "NaN", "null", "."],  # typical CSV missings
     )
     df_with_permco = add_permco_to_news_polars(financial_news_df)
-
     all_stocks = pl.read_csv(all_stocks_csv_path)
     all_stocks = all_stocks.with_columns(pl.col("date").cast(pl.Date))
     out = (df_with_permco.join(all_stocks, on=["permco", 'date'], how="right"))
     df = out.select('date', 'permco', 'ret', 'prc', 'vol', 'on_rdq', 'vol_missing_flag', 'comnam', 'Article_title')
 
     return df
+
+def process_final_dataset(news_csv_path: str, all_stocks_csv_path: str, iti_csv_path: str = "data/ITIs.csv") -> pl.DataFrame:
+    df = process_news_returns(news_csv_path, all_stocks_csv_path)
+    iti_df = prepare_ITI_data(iti_csv_path)
+    final_df = iti_df.join(df, on=['date', 'permco'], how='right')
+    final_df = final_df.filter(pl.col('ITI(13D)').is_not_null() & pl.col('ITI(impatient)').is_not_null())
+
+    final_df = final_df.filter(pl.col('date') >= pl.lit("2009-05-27").str.to_date())
+    final_df.sort(['date', 'permco'])
+    final_df.write_csv("data/processed/final_news_data.csv")
+    return final_df
+
+
+def embed_texts(df: pl.DataFrame, model_name: str = "all-MiniLM-L6-v2", batch_size: int = 32) -> pl.DataFrame:
+
+    df_filtered = df.filter(pl.col('Article_title').is_not_null())
+    model = SentenceTransformer(model_name)
+    titles = df_filtered["Article_title"].to_list()
+
+
+    batch_size = 64
+    all_embeddings = []
+
+    for i in tqdm(range(0, len(titles), batch_size), desc="Encoding headlines"):
+        batch = titles[i:i+batch_size]
+        emb = model.encode(batch, normalize_embeddings=True) 
+        all_embeddings.extend(emb.tolist()) 
+
+
+    df_emb = df_filtered.with_columns(pl.Series("embedding", all_embeddings))
+    df_emb.write_parquet("data/processed/news_with_embeddings.parquet")
+
+    return df_emb
+
+def rolling_pca(df: pl.DataFrame, window_days=180, step_days=30, n_components=10):
+    df = df.sort("date")
+    start = df["date"].min()
+    end = df["date"].max()
+    
+    dfs = []
+    current = start + dt.timedelta(days=window_days)
+    
+    while current + dt.timedelta(days=step_days) <= end:
+        train_start = current - dt.timedelta(days=window_days)
+        train_end = current
+        test_start = current
+        test_end = current + dt.timedelta(days=step_days)
+
+        # Train and test splits
+        train_df = df.filter((pl.col("date") >= train_start) & (pl.col("date") < train_end))
+        test_df = df.filter((pl.col("date") >= test_start) & (pl.col("date") < test_end))
+
+        if train_df.height < n_components or test_df.height == 0:
+            current += dt.timedelta(days=step_days)
+            continue
+
+        X_train = np.array(train_df["embedding"].to_list(), dtype=float)
+        X_test = np.array(test_df["embedding"].to_list(), dtype=float)
+
+        pca = PCA(n_components=n_components).fit(X_train)
+        X_test_pca = pca.transform(X_test)
+
+        test_df = test_df.with_columns(
+            pl.Series("pca_embedding", [x.tolist() for x in X_test_pca]).cast(pl.List(pl.Float64))
+        )
+
+        dfs.append(test_df)
+        current += dt.timedelta(days=step_days)
+
+    return pl.concat(dfs)
+
+
+def apply_rolling_pca() : 
+    df = pl.read_parquet("data/processed/news_with_embeddings.parquet")
+    df_pca = rolling_pca(df, window_days=180, step_days=30, n_components=10)
+    df_pca = df_pca.drop("embedding")
+    df_pca.write_parquet("data/processed/news_with_pca_embeddings.parquet")
+    return df_pca.select(['date', 'permco', 'pca_embedding'])
