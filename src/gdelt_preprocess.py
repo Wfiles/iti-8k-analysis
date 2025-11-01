@@ -5,13 +5,16 @@ import zipfile
 import pandas as pd
 from tqdm import tqdm
 from datetime import datetime, timedelta
+from pathlib import Path
 
 # =====================
 # CONFIGURATION
 # =====================
 MASTER_URL = "http://data.gdeltproject.org/gdeltv2/masterfilelist.txt"
-OUTPUT_DIR = "gdelt_gkg_files"
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+RAW_DIR = Path("data/raw/gdelt_gkg_files")           # pour les CSV
+PREPROCESSED_DIR = Path("data/preprocessed/gdelt_gkg_files")  # pour les Parquet
+RAW_DIR.mkdir(parents=True, exist_ok=True)
+PREPROCESSED_DIR.mkdir(parents=True, exist_ok=True)
 
 
 # =====================
@@ -37,16 +40,17 @@ def get_master_filelist(force_refresh: bool = False) -> list[str]:
     return urls
 
 
-def download_and_extract_zip(zip_url: str, output_dir: str = OUTPUT_DIR) -> str | None:
+def download_and_extract_zip(zip_url: str, output_dir: Path = RAW_DIR) -> str | None:
     """Download a ZIP only if the CSV does not exist, then extract CSV. Returns the CSV path."""
-    zip_name = os.path.basename(zip_url)
+    zip_name = zip_url.split("/")[-1]
     csv_name = zip_name.replace(".zip", "")
-    csv_path = os.path.join(output_dir, csv_name)
+    csv_path = output_dir / csv_name
 
-    if os.path.exists(csv_path):
+    if csv_path.exists():
         return csv_path
 
-    zip_path = os.path.join(output_dir, zip_name)
+    zip_path = output_dir / zip_name
+    
     if not os.path.exists(zip_path):
         with requests.get(zip_url, stream=True, timeout=30) as r:
             if r.status_code == 404:
@@ -151,8 +155,8 @@ def read_gkg_csv_filtered(csv_path: str) -> pd.DataFrame:
 
 def process_day(date: datetime, delete_csv: bool = False) -> pd.DataFrame | None:
     """Process all GKG files for a given day and save one Parquet."""
-    out_path = os.path.join(OUTPUT_DIR, f"{date.strftime('%Y%m%d')}.parquet")
-    if os.path.exists(out_path):
+    out_path = PREPROCESSED_DIR / f"{date.strftime('%Y%m%d')}.parquet"
+    if out_path.exists():
         print(f"[INFO] Parquet already exists for {date.strftime('%Y-%m-%d')}, skipping.")
         return pd.read_parquet(out_path)
 
@@ -177,8 +181,12 @@ def process_day(date: datetime, delete_csv: bool = False) -> pd.DataFrame | None
         if not df.empty:
             dfs.append(df)
 
-        if os.path.exists(csv_path) and delete_csv:
-            os.remove(csv_path)
+        if delete_csv:
+            # convert to Path object for unlink
+            try:
+                Path(csv_path).unlink()
+            except Exception as e:
+                print(f"[WARN] Could not delete CSV {csv_path}: {e}")
 
     if not dfs:
         print(f"[WARN] No data collected for {date.strftime('%Y-%m-%d')}, Parquet will not be saved.")
@@ -192,9 +200,9 @@ def process_day(date: datetime, delete_csv: bool = False) -> pd.DataFrame | None
 
 def process_month(year: int, month: int, delete_csv: bool = False) -> pd.DataFrame | None:
     """Process all days in a month and merge daily Parquets."""
-    month_out = os.path.join(OUTPUT_DIR, f"{year}_{month:02d}.parquet")
-    if os.path.exists(month_out):
-        return pd.read_parquet(month_out)
+    out_path = PREPROCESSED_DIR / f"{year}_{month:02d}.parquet"
+    if out_path.exists():
+        return pd.read_parquet(out_path)
 
     first_day = datetime(year, month, 1)
     next_month = (first_day.replace(day=28) + timedelta(days=4)).replace(day=1)
@@ -211,15 +219,15 @@ def process_month(year: int, month: int, delete_csv: bool = False) -> pd.DataFra
         return None
 
     month_df = pd.concat(daily_dfs, ignore_index=True)
-    month_df.to_parquet(month_out, index=False)
+    month_df.to_parquet(out_path, index=False)
     return month_df
 
 
 def process_year(year: int, delete_csv: bool = False) -> pd.DataFrame | None:
     """Process all months in a year and merge monthly Parquets."""
-    year_out = os.path.join(OUTPUT_DIR, f"{year}.parquet")
-    if os.path.exists(year_out):
-        return pd.read_parquet(year_out)
+    out_path = PREPROCESSED_DIR / f"{year}.parquet"
+    if os.path.exists():
+        return pd.read_parquet(out_path)
 
     monthly_dfs = []
     for month in tqdm(range(1, 13), desc=f"Year {year}"):
@@ -231,5 +239,5 @@ def process_year(year: int, delete_csv: bool = False) -> pd.DataFrame | None:
         return None
 
     year_df = pd.concat(monthly_dfs, ignore_index=True)
-    year_df.to_parquet(year_out, index=False)
+    year_df.to_parquet(out_path, index=False)
     return year_df
