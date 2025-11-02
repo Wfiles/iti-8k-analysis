@@ -51,11 +51,11 @@ def collect_us_crsp_data(db):
 
     all_stocks = db.raw_sql(
         """
-        SELECT a.permco, a.date, a.ret, a.prc, a.vol,
+        SELECT a.permno, a.date, a.ret, a.prc, a.vol,
                n.comnam, n.shrcd, n.exchcd, n.ticker
         FROM crsp.dsf AS a
         JOIN crsp.stocknames AS n
-          ON a.permco = n.permco
+          ON a.permno = n.permno
          AND a.date BETWEEN n.namedt AND n.nameenddt
         WHERE a.date BETWEEN '2001-01-01' AND '2024-12-31'
           AND n.shrcd IN (10, 11)           -- Common stocks
@@ -71,43 +71,13 @@ def collect_us_crsp_data(db):
     return all_stocks
 
 
-def collect_sp500_crsp_data(db):
-    """Collects CRSP data for S&P 500 constituents (2000-2024)."""
-    output_path = DATA_RAW / "crsp_sp500_daily.csv"
-    if output_path.exists():
-        print(f"File already exists: {output_path}. Loading from disk...")
-        return pd.read_csv(output_path, parse_dates=["date"])
-
-    print("Collecting S&P 500 CRSP data from WRDS...")
-
-    sp500 = db.raw_sql(
-        """
-        SELECT a.permco, a.start, a.ending, b.date, b.ret, n.comnam
-        FROM crsp.msp500list AS a
-        JOIN crsp.msf AS b
-          ON a.permco = b.permco
-         AND b.date BETWEEN a.start AND a.ending
-        JOIN crsp.stocknames AS n
-          ON a.permco = n.permco
-         AND b.date BETWEEN n.namedt AND n.nameenddt
-        WHERE b.date >= '2000-01-01'
-        ORDER BY b.date;
-        """,
-        date_cols=["start", "ending", "date", "namedt", "nameenddt"]
-    )
-
-    print("Saving S&P 500 CRSP data to disk...")
-    sp500.to_csv(output_path, index=False)
-    print(f"Saved S&P 500 CRSP data to {output_path}")
-    return sp500
-
 
 # ------------------------------------------------------------
 # Compustat Data Collection
 # ------------------------------------------------------------
 
 def collect_compustat(db):
-    """Collects Compustat quarterly data with RDQ and maps it to CRSP PERMCOs."""
+    """Collects Compustat quarterly data with RDQ and maps it to CRSP PERMNOs."""
     output_path = DATA_RAW / "compustat_rdq_mapping.csv"
     if output_path.exists():
         print(f"File already exists: {output_path}. Loading from disk...")
@@ -115,6 +85,7 @@ def collect_compustat(db):
 
     print("Collecting Compustat data from WRDS...")
 
+    # Compustat quarterly with RDQ
     compq = db.raw_sql("""
         SELECT gvkey, datadate, rdq, fyearq, fqtr, epspxq, epsfxq
         FROM comp.fundq
@@ -123,22 +94,43 @@ def collect_compustat(db):
     """)
 
     ccm = db.raw_sql("""
-        SELECT gvkey, lpermco AS permco, linktype, linkprim, linkdt, linkenddt
+        SELECT gvkey,
+               lpermno AS permno,
+               linktype, linkprim, linkdt, linkenddt
         FROM crsp.ccmxpf_linktable
         WHERE linktype IN ('LU','LC') AND linkprim IN ('P','C');
     """)
 
-    # Convert date columns
+    # --- dates ---
     compq["datadate"] = pd.to_datetime(compq["datadate"])
     compq["rdq"] = pd.to_datetime(compq["rdq"])
     ccm["linkdt"] = pd.to_datetime(ccm["linkdt"])
     ccm["linkenddt"] = pd.to_datetime(ccm["linkenddt"]).fillna(pd.Timestamp("2099-12-31"))
 
-    # Merge Compustat with CCM (valid RDQ link window)
+    # --- merge on gvkey, then filter to links valid on RDQ ---
     rdq_map = compq.merge(ccm, on="gvkey", how="inner")
-    mask = (rdq_map["rdq"] >= rdq_map["linkdt"]) & (rdq_map["rdq"] <= rdq_map["linkenddt"])
-    rdq_map = rdq_map.loc[mask, ["permco", "rdq", "fyearq", "fqtr", "epspxq", "epsfxq", "gvkey"]]
-    rdq_map = rdq_map.dropna(subset=["permco"]).sort_values(["permco", "rdq"]).drop_duplicates(subset=["permco", "rdq"])
+    mask = (
+        rdq_map["permno"].notna() &
+        (rdq_map["rdq"] >= rdq_map["linkdt"]) &
+        (rdq_map["rdq"] <= rdq_map["linkenddt"])
+    )
+    rdq_map = rdq_map.loc[mask, [
+        "permno", "gvkey", "rdq", "fyearq", "fqtr", "epspxq", "epsfxq",
+        "linktype", "linkprim", "linkdt", "linkenddt"
+    ]]
+
+    # --- resolve overlapping links (prefer P over C, LC over LU, latest end date) ---
+    rdq_map["priority"] = (
+        rdq_map["linkprim"].eq("P").astype(int) * 2 +
+        rdq_map["linktype"].eq("LC").astype(int)
+    )
+    rdq_map = (rdq_map
+        .sort_values(["permno", "rdq", "priority", "linkenddt"],
+                     ascending=[True, True, False, False])
+        .drop_duplicates(subset=["permno", "rdq"], keep="first")
+        .drop(columns=["priority", "linktype", "linkprim", "linkdt", "linkenddt"])
+        .sort_values(["permno", "rdq"])
+    )
 
     print("Saving Compustat-CRSP RDQ mapping to disk...")
     rdq_map.to_csv(output_path, index=False)
@@ -160,9 +152,9 @@ def merge_on_rdq(all_stocks, rdq_map):
     print("Merging RDQ dates onto daily CRSP data...")
 
     merged = all_stocks.merge(
-        rdq_map[["permco", "rdq"]].assign(on_rdq=1),
-        left_on=["permco", "date"],
-        right_on=["permco", "rdq"],
+        rdq_map[["permno", "rdq"]].assign(on_rdq=1),
+        left_on=["permno", "date"],
+        right_on=["permno", "rdq"],
         how="left"
     ).drop(columns=["rdq"])
 

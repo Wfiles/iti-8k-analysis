@@ -63,7 +63,7 @@ def process_crsp_iti_fnspid_dataset(
 
     # --- Join ITI indicators with FNSPID-CRSP dataset ---
     print("[INFO] Merging ITI data with FNSPID and returns...")
-    final_df = iti_df.join(df, on=['date', 'permco'], how='right')
+    final_df = iti_df.join(df, on=['date', 'permno'], how='right')
 
     # --- Filter for valid ITI values ---
     final_df = final_df.filter(
@@ -75,10 +75,14 @@ def process_crsp_iti_fnspid_dataset(
     final_df = final_df.filter(pl.col('date') >= pl.lit("2009-05-27").str.to_date())
 
     # --- Sort and export the final dataset ---
-    final_df = final_df.sort(['date', 'permco'])
+    final_df = final_df.sort(['date', 'permno'])
     output_path.parent.mkdir(parents=True, exist_ok=True)  # ensure directory exists
     print("[INFO] Writing final merged dataset to disk...")
     final_df.write_csv(output_path)
 
     print(f"[INFO] Final dataset successfully written to {output_path}")
     return final_df
+
+if __name__ == "__main__":
+    process_crsp_iti_fnspid_dataset()
+# ------------------------------------------------------------

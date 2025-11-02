@@ -22,34 +22,38 @@ def process_fnspid_returns(fnspid_csv_path: Path, all_stocks_csv_path: Path) -> 
     # --- Load FNSPID dataset ---
     fnspid_df = pl.read_csv(fnspid_csv_path)
     
-    # --- Map tickers to permco ---
-    fnspid_with_permco = add_permco_to_news_polars(fnspid_df)
+    # --- Map tickers to permno ---
+    fnspid_with_permno = add_permno_to_news_polars(fnspid_df)
 
     # --- Load CRSP returns ---
     all_stocks = pl.read_csv(all_stocks_csv_path).with_columns(pl.col("date").cast(pl.Date))
+    print(all_stocks.shape)
 
     # --- Merge news with stock returns ---
-    merged_df = fnspid_with_permco.join(all_stocks, on=["permco", "date"], how="right")
-
+    merged_df = fnspid_with_permno.join(all_stocks, on=["permno", "date"], how="right")
+    print(f'Merged shape: {merged_df.shape}')
     # --- Select relevant columns ---
-    df = merged_df.select(['date', 'permco', 'ret', 'prc', 'vol',
+    df = merged_df.select(['date', 'permno', 'ret', 'prc', 'vol',
                            'on_rdq', 'vol_missing_flag', 'comnam', 'Article_title'])
 
+    print(f'{df.shape}')
     # --- Apply FinBERT sentiment only if CSV does not exist ---
     sentiment_df = add_financial_sentiment(df)
 
     # --- Ensure 'date' column has same type ---
-    sentiment_df = sentiment_df.with_columns(
+    if sentiment_df.schema['date'] != pl.Date:
+        sentiment_df = sentiment_df.with_columns(
         pl.col("date").str.strptime(pl.Date, format="%Y-%m-%d")
-    )
+        )
 
     # --- Merge sentiment into main DataFrame ---
     df = df.join(
-        sentiment_df,
-        left_on=['Article_title', 'date', 'comnam'],
+       sentiment_df,
+       left_on=['Article_title', 'date', 'comnam'],
         right_on=['Headline', 'date', 'comnam'],
-        how='left'
-    )
+       how='left'
+   )
+    df = df.unique()
 
     # --- Save final parquet ---
     print("[INFO] Saving final dataset with sentiment to parquet...")
@@ -61,18 +65,18 @@ def process_fnspid_returns(fnspid_csv_path: Path, all_stocks_csv_path: Path) -> 
 
 
 # ------------------------------------------------------------
-# Function: add_permco_to_news_polars
+# Function: add_permno_to_news_polars
 # ------------------------------------------------------------
-def add_permco_to_news_polars(financial_news_df, nrows=None):
+def add_permno_to_news_polars(financial_news_df, nrows=None):
     """
-    Map tickers in financial news to unique company IDs (permco) using WRDS CRSP database.
+    Map tickers in financial news to unique company IDs (permno) using WRDS CRSP database.
 
     Args:
         financial_news_df (pd.DataFrame or pl.DataFrame): DataFrame containing at least 'Date' and 'Stock_symbol' columns.
         nrows (int, optional): Optional limit on number of rows to process.
 
     Returns:
-        pl.DataFrame: Polars DataFrame with 'permco' column added.
+        pl.DataFrame: Polars DataFrame with 'permno' column added.
     """
 
     # --- Convert to Polars if needed ---
@@ -104,9 +108,9 @@ def add_permco_to_news_polars(financial_news_df, nrows=None):
     wrds_user = os.getenv("WRDS_USERNAME")
     db = wrds.Connection(wrds_username=wrds_user, verbose=False)
 
-    # --- Query CRSP stocknames table for ticker-permco mapping ---
+    # --- Query CRSP stocknames table for ticker-permno mapping ---
     stocknames_pd = db.raw_sql("""
-        SELECT permco, ticker
+        SELECT permno, ticker
         FROM crsp.stocknames
         WHERE ticker IS NOT NULL
     """)
@@ -120,7 +124,7 @@ def add_permco_to_news_polars(financial_news_df, nrows=None):
           .unique(subset=["ticker"], keep="first")
     )
 
-    # --- Merge news with permco mapping ---
+    # --- Merge news with permno mapping ---
     out = news.join(stocknames, on="ticker", how="left")
 
     return out
@@ -161,7 +165,7 @@ def add_financial_sentiment(
         return sentiment_df
 
     # Filter out rows without headlines
-    title_df = df.select(["Article_title", "date", "comnam"]).drop_nulls(["Article_title"])
+    title_df = df.select(["Article_title", "date", "comnam", 'permno']).drop_nulls(["Article_title"])
 
     # Load tokenizer and model
     tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -207,7 +211,8 @@ def add_financial_sentiment(
                 label_names[1]: probs[:, 1],
                 label_names[2]: probs[:, 2],
                 "date": batch.get_column("date").to_list(),
-                "comnam": batch.get_column("comnam").to_list()
+                "comnam": batch.get_column("comnam").to_list(),
+                'permno': batch.get_column("permno").to_list()  
             })
 
             # Append batch to CSV
