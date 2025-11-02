@@ -5,7 +5,7 @@ import wrds
 from dotenv import load_dotenv, find_dotenv
 
 
-def prepare_ITI_data(iti_csv_path: str) -> pd.DataFrame:
+def prepare_ITI_data(iti_csv_path: str = "data/raw/ITIs.csv") -> pd.DataFrame:
     """
     Load and prepare ITI data from a CSV file.
 
