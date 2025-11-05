@@ -46,6 +46,17 @@ def process_crsp_iti_fnspid_dataset(
     5. Save the final dataset to disk under data/merged/.
     """
 
+    # if final output already exists, skip processing
+    if output_path.exists():
+        print(f"[INFO] Final dataset already exists at {output_path}. Loading from disk...")
+        df = pl.read_csv(output_path, try_parse_dates=True)
+        df = df.with_columns([
+            pl.col("Positive").cast(pl.Float64),
+            pl.col("Negative").cast(pl.Float64),
+            pl.col("Neutral").cast(pl.Float64)
+        ])
+        return df
+
     # --- Ensure CRSP preprocessed dataset exists ---
     if not all_stocks_csv_path.exists():
         print(f"[INFO] {all_stocks_csv_path} not found. Running CRSP preprocessing...")
@@ -82,7 +93,3 @@ def process_crsp_iti_fnspid_dataset(
 
     print(f"[INFO] Final dataset successfully written to {output_path}")
     return final_df
-
-if __name__ == "__main__":
-    process_crsp_iti_fnspid_dataset()
-# ------------------------------------------------------------

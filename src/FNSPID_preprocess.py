@@ -27,16 +27,14 @@ def process_fnspid_returns(fnspid_csv_path: Path, all_stocks_csv_path: Path) -> 
 
     # --- Load CRSP returns ---
     all_stocks = pl.read_csv(all_stocks_csv_path).with_columns(pl.col("date").cast(pl.Date))
-    print(all_stocks.shape)
 
     # --- Merge news with stock returns ---
     merged_df = fnspid_with_permno.join(all_stocks, on=["permno", "date"], how="right")
-    print(f'Merged shape: {merged_df.shape}')
+
     # --- Select relevant columns ---
     df = merged_df.select(['date', 'permno', 'ret', 'prc', 'vol',
                            'on_rdq', 'vol_missing_flag', 'comnam', 'Article_title'])
 
-    print(f'{df.shape}')
     # --- Apply FinBERT sentiment only if CSV does not exist ---
     sentiment_df = add_financial_sentiment(df)
 
@@ -57,7 +55,7 @@ def process_fnspid_returns(fnspid_csv_path: Path, all_stocks_csv_path: Path) -> 
 
     # --- Save final parquet ---
     print("[INFO] Saving final dataset with sentiment to parquet...")
-    output_parquet_path = fnspid_csv_path.parent / "fnspid_crsp_with_sentiment.parquet"
+    output_parquet_path = fnspid_csv_path.parent.parent / "preprocessed" / "fnspid_crsp_with_sentiment.parquet"
     df.write_parquet(output_parquet_path)
     print(f"[INFO] Final dataset with sentiment saved to {output_parquet_path}")
 
