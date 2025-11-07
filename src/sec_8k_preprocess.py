@@ -22,17 +22,35 @@ def download_zip(url: str, zip_path: str, force_download: bool = False) -> str:
             with open(zip_path, "wb") as f:
                 for chunk in r.iter_content(chunk_size=8192):
                     f.write(chunk)
-        print("✅ Download complete.")
+        print("Download complete.")
     else:
-        print("📦 ZIP already exists locally, skipping download.")
+        print("ZIP already exists locally, skipping download.")
     return zip_path
 
+import zipfile
+import orjson
+import polars as pl
+from tqdm import tqdm
+from itertools import zip_longest
 
-def parse_zip(zip_path: str) -> pl.DataFrame:
-    """Parse all JSONs in the ZIP and return a raw Polars DataFrame."""
+import zipfile
+import orjson
+import polars as pl
+from tqdm import tqdm
+from itertools import zip_longest
+
+def parse_zip_batched(zip_path: str, only_8k: bool = True, batch_size: int = 200_000) -> pl.DataFrame:
+    """
+    Parse JSONs inside a ZIP into a Polars DataFrame using batching to avoid OOM.
+    - only_8k: keep only 8-K / 8-K/A (dramatically reduces rows)
+    - batch_size: number of rows per batch before converting to a DataFrame
+    """
+    batches = []
     rows = []
+
     with zipfile.ZipFile(zip_path, "r") as zf:
-        json_files = [name for name in zf.namelist() if name.endswith(".json")]
+        json_files = [n for n in zf.namelist() if n.endswith(".json")]
+
         for name in tqdm(json_files, desc="Parsing SEC JSONs"):
             with zf.open(name) as f:
                 data = orjson.loads(f.read())
@@ -41,28 +59,85 @@ def parse_zip(zip_path: str) -> pl.DataFrame:
             cik_int = str(int(cik_raw)) if cik_raw else None
             company = data.get("name")
 
-            recent = data.get("filings", {}).get("recent", {}) or {}
-            forms = recent.get("form", []) or []
-            accessions = recent.get("accessionNumber", []) or []
-            accept_ts = recent.get("acceptanceDateTime", []) or []
+            recent = (data.get("filings", {}) or {}).get("recent", {}) or {}
 
-            for form, acc, acc_time in zip(forms, accessions, accept_ts):
+            # Parallel arrays
+            forms              = recent.get("form", []) or []
+            accessions         = recent.get("accessionNumber", []) or []
+            accept_ts          = recent.get("acceptanceDateTime", []) or []
+            filing_dates       = recent.get("filingDate", []) or []
+            report_dates       = recent.get("reportDate", []) or []
+            acts               = recent.get("act", []) or []
+            file_numbers       = recent.get("fileNumber", []) or []
+            film_numbers       = recent.get("filmNumber", []) or []
+            items_list         = recent.get("items", []) or []
+            sizes              = recent.get("size", []) or []
+            is_xbrl            = recent.get("isXBRL", []) or []
+            is_inline_xbrl     = recent.get("isInlineXBRL", []) or []
+            primary_doc        = recent.get("primaryDocument", []) or []
+            primary_doc_descr  = recent.get("primaryDocDescription", []) or []
+
+            for (form, acc, acc_time, fdate, rdate, act, fileno, filmno,
+                 items, size, xbrl, ixbrl, pdoc, pdescr) in zip_longest(
+                    forms, accessions, accept_ts, filing_dates, report_dates,
+                    acts, file_numbers, film_numbers, items_list, sizes,
+                    is_xbrl, is_inline_xbrl, primary_doc, primary_doc_descr,
+                    fillvalue=None,
+                 ):
+                if only_8k and (form not in ("8-K", "8-K/A")):
+                    continue
+
+                # Keep URL components instead of full URL string (saves RAM)
                 rows.append({
                     "cik_int": cik_int,
                     "company_name": company,
                     "form": form,
                     "accession": acc,
-                    "acceptance_datetime": acc_time
+                    "filing_date": fdate,
+                    "report_date": rdate,
+                    "acceptance_datetime": acc_time,
+                    "act": act,
+                    "file_number": fileno,
+                    "film_number": filmno,
+                    "items": items,
+                    "size": size,
+                    "is_xbrl": xbrl,
+                    "is_inline_xbrl": ixbrl,
+                    "primary_document": pdoc,
+                    "primary_doc_description": pdescr,
                 })
 
-    return pl.DataFrame(rows)
+                if len(rows) >= batch_size:
+                    batches.append(pl.DataFrame(rows))
+                    rows.clear()
+
+    if rows:
+        batches.append(pl.DataFrame(rows))
+        rows.clear()
+
+    # Concatenate batches and normalize types; rechunk consolidates memory
+    df = pl.concat(batches, how="vertical_relaxed", rechunk=True) if batches else pl.DataFrame()
+
+    # Type normalization (use strict=False to avoid errors on bad strings)
+    if df.height > 0:
+        df = (
+            df.with_columns([
+                pl.col("filing_date").str.to_date("%Y-%m-%d", strict=False),
+                pl.col("report_date").str.to_date("%Y-%m-%d", strict=False),
+                pl.col("acceptance_datetime").str.to_datetime("%Y-%m-%dT%H:%M:%SZ", strict=False),
+            ])
+            .with_columns(
+                pl.col("acceptance_datetime").dt.date().alias("acceptance_date")
+            )
+        )
+
+    return df
 
 
 def process_filings(df: pl.DataFrame) -> pl.DataFrame:
     """Filter 8-K/8-K/A filings, keep essential columns, add accession_no_dash and url_txt."""
     df_8k = (
         df.filter(pl.col("form").is_in(["8-K", "8-K/A"]))
-          .select(["accession", "cik_int", "company_name", "form", "acceptance_datetime"])
           .with_columns([
               pl.col("accession").str.replace_all("-", "").alias("accession_no_dash")
           ])
@@ -98,20 +173,20 @@ def load_8k_filings(
     os.makedirs(os.path.dirname(parquet_path), exist_ok=True)
 
     if os.path.exists(parquet_path) and not force_download:
-        print(f"✅ Parquet file exists at {parquet_path}. Reading...")
+        print(f" Parquet file exists at {parquet_path}. Reading...")
         return pl.read_parquet(parquet_path)
 
     # Download & parse
     zip_file = download_zip(url, zip_path, force_download)
-    df_raw = parse_zip(zip_file)
+    df_raw =  parse_zip_batched(zip_file)
 
     # Process & filter
     df_8k = process_filings(df_raw)
 
     # Save Parquet
-    print(f"💾 Saving {df_8k.height:,} rows to {parquet_path}...")
+    print(f"Saving {df_8k.height:,} rows to {parquet_path}...")
     df_8k.write_parquet(parquet_path, compression="zstd")
-    print("✅ Done.")
+    print("Done.")
     return df_8k
 
 
