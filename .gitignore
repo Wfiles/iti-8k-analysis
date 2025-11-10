@@ -40,6 +40,7 @@ data/*.tsv
 data/*.zip
 data/*.parquet
 data/*.h5
+data/preprocessed/submissions_8k.parquet
 
 # MacOS / Windows specific
 .DS_Store
