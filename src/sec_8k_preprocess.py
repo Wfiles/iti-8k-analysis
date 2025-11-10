@@ -10,6 +10,8 @@ from bs4 import BeautifulSoup as bs
 import pandas as pd
 import unicodedata
 
+from src.crsp_preprocess import connect_to_wrds
+
 
 def download_zip(url: str, zip_path: str, force_download: bool = False) -> str:
     """Download ZIP from SEC if missing or forced."""
@@ -334,3 +336,116 @@ def parse_8k_filing(link: str) -> pd.DataFrame:
 
     print(f"Parsed filing: {link} with {len(df)} items.")
     return df
+
+
+
+
+
+
+
+
+
+def map_cik_to_permno(df: pl.DataFrame, cik_col: str = "cik", date_col: str = "date") -> pl.DataFrame:
+    """
+    Map each (CIK, date) pair from the input DataFrame to the corresponding CRSP PERMNO
+    using the WRDS 'crsp.ccm_lookup' table. Allows specifying the column names for CIK and date.
+
+    Parameters
+    ----------
+    df : pl.DataFrame
+        Input Polars DataFrame.
+    cik_col : str
+        Name of the column containing CIK identifiers in df.
+    date_col : str
+        Name of the column containing dates in df.
+
+    Returns
+    -------
+    pl.DataFrame
+        Same as input DataFrame, with one additional column 'permno' containing the mapped CRSP ID.
+    """
+
+    # --- Connect to WRDS database ---
+    db = connect_to_wrds()
+
+    # --- Load the CCM lookup table ---
+    ccm_lookup = db.get_table(
+        library='crsp',
+        table='ccm_lookup',
+        columns=['cik', 'lpermno', 'linkdt', 'linkenddt']
+    )
+
+    # --- Drop missing rows ---
+    ccm_lookup = ccm_lookup.dropna()
+
+    # --- Convert to Polars and cast types ---
+    ccm_lookup = (
+        pl.from_pandas(ccm_lookup)
+        .with_columns([
+            pl.col("cik").cast(pl.Int64),
+            pl.col("lpermno").cast(pl.Int64).alias("permno"),
+            pl.col("linkdt").cast(pl.Date),
+            pl.col("linkenddt").cast(pl.Date)
+        ])
+    )
+
+    # --- Cast input DataFrame columns ---
+    df = df.with_columns([
+        pl.col(cik_col).cast(pl.Int64),
+        pl.col(date_col).cast(pl.Date)
+    ])
+
+    # --- Join on CIK and filter by date range ---
+    merged = (
+        df.join(ccm_lookup, left_on=cik_col, right_on="cik", how="left")
+        .filter((pl.col(date_col) >= pl.col("linkdt")) & (pl.col(date_col) <= pl.col("linkenddt")))
+        .select(df.columns + ["permno"])
+    )
+
+    n_missing = merged.filter(pl.col("permno").is_null()).height
+    print(f"Number of rows with missing permno: {n_missing}")
+
+    return merged
+
+
+def preprocess_sec_8k() -> pl.DataFrame:
+    """Load, filter, map CIK to PERMNO, and return cleaned SEC 8-K filings DataFrame."""
+    
+    # Load 8-K filings
+    df_8k = load_8k_filings()
+
+    # Add days between report and filing, extract year, and filter
+    df_8k = (
+        df_8k
+        # Compute days between report and filing
+        .with_columns(
+            ((pl.col("filing_date") - pl.col("report_date")).dt.total_seconds() / 86400)
+            .alias("days_between_report_and_filing").cast(pl.Int32)
+        )
+        # Keep filings from 2004 onwards
+        .filter(pl.col("report_date") >= pl.datetime(2004, 1, 1))
+        # Extract report year
+        .with_columns(pl.col("report_date").dt.year().alias("report_year"))
+        # Keep filings where report date is 1-30 days before filing date
+        .filter(pl.col("days_between_report_and_filing").is_between(1, 30))
+    )
+    
+    # Cast cik_int to Int32
+    df_8k = df_8k.with_columns(
+    pl.col("cik_int").cast(pl.Int32)
+    )
+
+    # Map CIK to PERMNO
+    df_8k_with_permno = map_cik_to_permno(df_8k, cik_col="cik_int", date_col="filing_date")
+
+    # Keep only relevant columns
+    df_8k_clean = df_8k_with_permno.select([
+        "permno",
+        "filing_date",
+        "report_date",
+        "report_year",
+        "days_between_report_and_filing",
+        "url_txt"
+    ])
+
+    return df_8k_clean
