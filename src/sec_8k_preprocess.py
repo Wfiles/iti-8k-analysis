@@ -205,8 +205,7 @@ def parse_8k_filing(link: str) -> pd.DataFrame:
                       Returns None if no items found.
     """
 
-    # -------------------------------
-    # Step 1: Download and clean text
+    # Download and clean text
     # -------------------------------
     def get_text(link: str) -> list[str]:
         """
@@ -229,8 +228,8 @@ def parse_8k_filing(link: str) -> pd.DataFrame:
         print(f"Downloaded filing from {link}")
         return text
 
-    # -------------------------------
-    # Step 2: Identify reported items
+
+    # Identify reported items
     # -------------------------------
     def get_items(text: list[str]) -> list[str]:
         """
@@ -239,8 +238,8 @@ def parse_8k_filing(link: str) -> pd.DataFrame:
         itemPattern = re.compile(r"^(Item\s[1-9][\.\d]*)", re.IGNORECASE)
         return [match.group(0) for line in text if (match := itemPattern.search(line.strip()))]
 
-    # -------------------------------
-    # Step 3: Extract text for each item
+
+    # Extract text for each item
     # -------------------------------
     def get_data(file: list[str], items: list[str]) -> pd.DataFrame:
         """
@@ -288,8 +287,8 @@ def parse_8k_filing(link: str) -> pd.DataFrame:
         data["edgar.link"] = link
         return data
 
-    # -------------------------------
-    # Step 4: Fallback extraction (if items not found)
+
+    #  Fallback extraction (if items not found)
     # -------------------------------
     def get_data_alternative(file: list[str]) -> pd.DataFrame:
         """
@@ -318,8 +317,7 @@ def parse_8k_filing(link: str) -> pd.DataFrame:
         data["edgar.link"] = link
         return data
 
-    # -------------------------------
-    # Step 5: Run pipeline
+    # Run pipeline
     # -------------------------------
     file = get_text(link)
     items = get_items(file)
@@ -336,11 +334,6 @@ def parse_8k_filing(link: str) -> pd.DataFrame:
 
     print(f"Parsed filing: {link} with {len(df)} items.")
     return df
-
-
-
-
-
 
 
 
@@ -445,7 +438,8 @@ def preprocess_sec_8k() -> pl.DataFrame:
         "report_date",
         "report_year",
         "days_between_report_and_filing",
-        "url_txt"
+        "url_txt",
+        'items'
     ])
 
     return df_8k_clean

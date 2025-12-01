@@ -11,14 +11,12 @@ def merge_8k_iti() -> pl.DataFrame:
     # Prepare ITI data
     df_iti = prepare_ITI_data()
 
-    # Filter ITI data to only after the fisrt date of df_8k
-    first_8k_date = df_8k.select(pl.col("report_date").min()).item()
+    # Filter ITI data to only after the fisrt date of df_8k - 2 weeks
+
+    first_8k_date = df_8k.select(pl.col("report_date").min() - pl.duration(weeks=2)).item()
     df_iti = df_iti.filter(pl.col("date") >= first_8k_date)
     
-    # Rename 'date' column in ITI data to 'report_date' for merging
-    df_iti_renamed = df_iti.rename({'date': 'report_date'})
-    
+
     # Merge on 'permno' and 'report_date'
-    df_merged = df_iti_renamed.join(df_8k, on=['permno', 'report_date'], how='left')
-    
+    df_merged = df_iti.join(df_8k, left_on=['permno', 'date'], right_on=['permno', 'report_date'], how='left')
     return df_merged
