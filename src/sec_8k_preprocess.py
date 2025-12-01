@@ -3,14 +3,18 @@ import requests
 import zipfile
 import orjson
 import polars as pl
-from tqdm import tqdm
+from tqdm.auto import tqdm
 import re
 import requests
 from bs4 import BeautifulSoup as bs
 import pandas as pd
 import unicodedata
+from pathlib import Path
+import torch
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
 
 from src.crsp_preprocess import connect_to_wrds
+from src.iti_preprocess import prepare_ITI_data
 
 
 def download_zip(url: str, zip_path: str, force_download: bool = False) -> str:
@@ -192,25 +196,16 @@ def load_8k_filings(
     return df_8k
 
 
-def parse_8k_filing(link: str) -> pd.DataFrame:
+def parse_8k_filing(link: str) -> pl.DataFrame:
     """
     Download and parse an SEC 8-K or 8-K/A filing text file.
-
-    Args:
-        link (str): Direct URL to the SEC filing TXT file.
-
-    Returns:
-        pd.DataFrame: Each row corresponds to an Item reported in the filing.
-                      Columns: item, itemText, cik, conm (company name), edgar.link
-                      Returns None if no items found.
+    Return a Polars DataFrame or None.
     """
 
-    # Download and clean text
-    # -------------------------------
+    # ---------------------------------------------------
+    # Step 1: Download and clean text
+    # ---------------------------------------------------
     def get_text(link: str) -> list[str]:
-        """
-        Retrieve filing text from SEC, normalize, and split by lines.
-        """
         headers = {
             "User-Agent": "DataScience Student student@example.com",
             "Accept-Encoding": "gzip, deflate",
@@ -219,121 +214,447 @@ def parse_8k_filing(link: str) -> pd.DataFrame:
         page = requests.get(link, headers=headers)
         page.raise_for_status()
         html = bs(page.content, "lxml")
-        text = html.get_text().replace(u'\xa0', ' ').replace("\t", " ").replace("\x92", "'").split("\n")
 
-        # Check for SEC block message
+        # Normalize text
+        text = (
+            html.get_text()
+            .replace("\xa0", " ")
+            .replace("\t", " ")
+            .replace("\x92", "'")
+            .split("\n")
+        )
+
+        # SEC block detection
         if any("our Request Originates from an Undeclared Automated Tool" in line for line in text):
             raise Exception("Blocked by SEC: Your Request Originates from an Undeclared Automated Tool")
 
-        print(f"Downloaded filing from {link}")
+        #print(f"Downloaded filing from {link}")
         return text
 
-
-    # Identify reported items
-    # -------------------------------
+    # ---------------------------------------------------
+    # Step 2: Identify items
+    # ---------------------------------------------------
     def get_items(text: list[str]) -> list[str]:
-        """
-        Extract all Item headers in the filing (e.g., 'Item 1.01', 'Item 2.02').
-        """
-        itemPattern = re.compile(r"^(Item\s[1-9][\.\d]*)", re.IGNORECASE)
-        return [match.group(0) for line in text if (match := itemPattern.search(line.strip()))]
+        pattern = re.compile(r"^(Item\s[1-9][\.\d]*)", re.IGNORECASE)
+        return [m.group(0) for line in text if (m := pattern.search(line.strip()))]
 
-
-    # Extract text for each item
-    # -------------------------------
-    def get_data(file: list[str], items: list[str]) -> pd.DataFrame:
-        """
-        Map each detected Item to its corresponding text section.
-        """
+    # ---------------------------------------------------
+    # Step 3: Extract items (primary method)
+    # ---------------------------------------------------
+    def get_data(file: list[str], items: list[str]) -> pl.DataFrame:
         text8k = []
         dataList = []
         stop = re.compile("SIGNATURE", re.IGNORECASE)
-        companyCik = re.compile(r"(CENTRAL INDEX KEY:)([\s\d]+)", re.IGNORECASE)
-        companyName = re.compile(r"(COMPANY CONFORMED NAME:)(.+)", re.IGNORECASE)
-        control = 0
+
+        cik_re = re.compile(r"(CENTRAL INDEX KEY:)([\s\d]+)", re.IGNORECASE)
+        name_re = re.compile(r"(COMPANY CONFORMED NAME:)(.+)", re.IGNORECASE)
+
         itemPattern = re.compile("|".join(["^" + re.escape(i) for i in items]), re.IGNORECASE)
-        cik = conm = None
+        cik = None
+        conm = None
+        control = 0
 
         for line in file:
             if control == 0:
-                # Extract CIK and company name from header
-                if not cik and (match := companyCik.search(line)):
-                    cik = match.group(2).strip()
-                if not conm and (match := companyName.search(line)):
-                    conm = match.group(2).strip()
-                # Start of first item
-                if itemPattern.search(line):
-                    it = itemPattern.search(line).group(0)
-                    text8k.append(re.sub(it, "", line))
+                # Extract company metadata
+                if not cik and (m := cik_re.search(line)):
+                    cik = m.group(2).strip()
+                if not conm and (m := name_re.search(line)):
+                    conm = m.group(2).strip()
+
+                # Detect first item
+                if (m := itemPattern.search(line)):
+                    it = m.group(0)
+                    text8k.append(line.replace(it, "").strip())
                     control = 1
+
             else:
-                # Collect text for each subsequent item
-                if itemPattern.search(line):
+                # New item
+                if (m := itemPattern.search(line)):
                     dataList.append([it, "\n".join(text8k)])
-                    it = itemPattern.search(line).group(0)
-                    text8k = [re.sub(it, "", line)]
+                    it = m.group(0)
+                    text8k = [line.replace(it, "").strip()]
+                # End of file
                 elif stop.search(line):
                     dataList.append([it, "\n".join(text8k)])
                     break
                 else:
                     text8k.append(line)
 
-        if not dataList:
-            return pd.DataFrame(columns=["item", "itemText", "cik", "conm", "edgar.link"])
+        # Fix: explicitly declare row orientation
+        return pl.DataFrame(
+            dataList,
+            schema=["item", "itemText"],
+            orient="row"
+        ).with_columns([
+            pl.lit(cik).alias("cik"),
+            pl.lit(conm).alias("conm"),
+            pl.lit(link).alias("edgar.link")
+        ])
 
-        data = pd.DataFrame(dataList, columns=["item", "itemText"])
-        data["cik"] = cik
-        data["conm"] = conm
-        data["edgar.link"] = link
-        return data
-
-
-    #  Fallback extraction (if items not found)
-    # -------------------------------
-    def get_data_alternative(file: list[str]) -> pd.DataFrame:
-        """
-        Alternative method to extract items by scanning full text.
-        """
-        fullText = " ".join(file)
-        fullText = unicodedata.normalize("NFKD", fullText).encode('ascii', 'ignore').decode('utf8')
+    # ---------------------------------------------------
+    # Step 4: Alternative extraction
+    # ---------------------------------------------------
+    def get_data_alternative(file: list[str]) -> pl.DataFrame:
+        full = " ".join(file)
+        full = unicodedata.normalize("NFKD", full).encode("ascii", "ignore").decode("utf8")
 
         itemPattern = re.compile(r"(Item\s[1-9][\.\d]*)", re.IGNORECASE)
-        items = itemPattern.findall(fullText)
+        items = itemPattern.findall(full)
+
         stop = re.compile("SIGNATURE", re.IGNORECASE)
-        sig_match = stop.search(fullText)
-        sig = sig_match.start() if sig_match else len(fullText)
+        sig_pos = stop.search(full)
+        sig = sig_pos.start() if sig_pos else len(full)
 
-        itemsStart = [fullText.find(i) for i in items] + [sig]
-        dataList = [[items[n], fullText[itemsStart[n]:itemsStart[n+1]]] for n in range(len(items))]
+        starts = [full.find(i) for i in items] + [sig]
+        dataList = [
+            [items[n], full[starts[n]:starts[n+1]]]
+            for n in range(len(items))
+        ]
 
-        companyCik = re.compile(r"(CENTRAL INDEX KEY:)([\s\d]+)", re.IGNORECASE)
-        companyName = re.compile(r"(COMPANY CONFORMED NAME:)(.+)", re.IGNORECASE)
-        cik = companyCik.search(fullText).group(2).strip() if companyCik.search(fullText) else None
-        conm = companyName.search(fullText).group(2).strip() if companyName.search(fullText) else None
+        cik_re = re.compile(r"(CENTRAL INDEX KEY:)([\s\d]+)", re.IGNORECASE)
+        name_re = re.compile(r"(COMPANY CONFORMED NAME:)(.+)", re.IGNORECASE)
 
-        data = pd.DataFrame(dataList, columns=["item", "itemText"])
-        data["cik"] = cik
-        data["conm"] = conm
-        data["edgar.link"] = link
-        return data
+        cik = cik_re.search(full).group(2).strip() if cik_re.search(full) else None
+        conm = name_re.search(full).group(2).strip() if name_re.search(full) else None
 
-    # Run pipeline
-    # -------------------------------
+        # Fix: explicitly declare row orientation
+        return pl.DataFrame(
+            dataList,
+            schema=["item", "itemText"],
+            orient="row"
+        ).with_columns([
+            pl.lit(cik).alias("cik"),
+            pl.lit(conm).alias("conm"),
+            pl.lit(link).alias("edgar.link")
+        ])
+
+    # ---------------------------------------------------
+    # Step 5: Run pipeline
+    # ---------------------------------------------------
     file = get_text(link)
     items = get_items(file)
 
     if items:
         df = get_data(file, items)
-        if df.empty:
+        if df.height == 0:
             df = get_data_alternative(file)
     else:
         df = get_data_alternative(file)
-        if df.empty:
-            print(f"No items found in filing: {link}")
+        if df.height == 0:
+            #print(f"No items found in filing: {link}")
             return None
 
-    print(f"Parsed filing: {link} with {len(df)} items.")
+    #print(f"Parsed filing: {link} with {df.height} items.")
     return df
+
+
+
+
+
+def parse_item_8k_filings(
+    df_8k_raw: pl.DataFrame, 
+    item_to_parse: str,
+    checkpoint_path: str = "data/preprocessed/checkpoint_item.parquet",
+    checkpoint_every: int = 50
+) -> pl.DataFrame:
+    """
+    Parse all 8-K filings for a specific item with checkpointing.
+    If a checkpoint exists, resumes from where it left off.
+    
+    Args:
+        df_8k_raw: Polars DataFrame containing at least 'url_txt' and 'items'.
+        item_to_parse: Item number to parse, e.g., "8.01" or "2.02".
+        checkpoint_path: Path to save incremental progress (parquet file).
+        checkpoint_every: Save checkpoint every N URLs processed.
+    
+    Returns:
+        Polars DataFrame with columns 'item_txt' and 'url_txt'.
+    """
+    import os
+    from pathlib import Path
+    from tqdm import tqdm
+    import polars as pl
+
+    Path("data/preprocessed").mkdir(parents=True, exist_ok=True)
+
+    # Step 1: Filter DF based on target item
+    df_filtered = df_8k_raw.filter(
+        pl.col("items").str.contains(item_to_parse)
+    )
+
+    if df_filtered.is_empty():
+        print(f"No filings with item {item_to_parse} found in the DataFrame.")
+        return pl.DataFrame({"item_txt": [], "url_txt": []}, schema={"item_txt": pl.Utf8, "url_txt": pl.Utf8})
+
+    urls = df_filtered.get_column("url_txt").to_list()
+
+    # ---------------------------------------------------
+    # Step 0: Load checkpoint if exists
+    # ---------------------------------------------------
+    parsed_urls = set()
+    if os.path.exists(checkpoint_path):
+        print(f"[INFO] Resuming from checkpoint: {checkpoint_path}")
+        parsed_df = pl.read_parquet(checkpoint_path)
+        parsed_urls = set(parsed_df.get_column("url_txt").to_list())
+        urls = [u for u in urls if u not in parsed_urls]
+    else:
+        # Create empty DataFrame with correct types
+        parsed_df = pl.DataFrame({
+            "item_txt": pl.Series("item_txt", [], dtype=pl.Utf8),
+            "url_txt": pl.Series("url_txt", [], dtype=pl.Utf8)
+        })
+
+    # ---------------------------------------------------
+    # Step 2: Parse remaining URLs
+    # ---------------------------------------------------
+    dfs = [parsed_df]  # start with checkpoint data
+
+    for i, link in enumerate(tqdm(urls, desc=f"Parsing Item {item_to_parse} filings")):
+        try:
+            df_parsed = parse_8k_filing(link)
+            if df_parsed is None or df_parsed.is_empty():
+                continue
+
+            df_item = df_parsed.filter(
+                pl.col("item").str.contains(item_to_parse, literal=False)
+            )
+
+            if df_item.height > 0:
+                df_item = df_item.select([
+                    pl.col("itemText").alias("item_txt"),
+                    pl.col("edgar.link").alias("url_txt")
+                ])
+                dfs.append(df_item)
+
+        except Exception as e:
+            print(f"Error parsing {link}: {e}")
+            continue
+
+        # Save checkpoint every N URLs
+        if (i + 1) % checkpoint_every == 0:
+            temp_df = pl.concat(dfs, how="vertical").unique(subset=["url_txt"])
+            temp_df.write_parquet(checkpoint_path)
+            #print(f"[CHECKPOINT] Saved at {i + 1} parsed filings")
+
+    # ---------------------------------------------------
+    # Step 3: Final concat
+    # ---------------------------------------------------
+    df_final = pl.concat(dfs, how="vertical").unique(subset=["url_txt"])
+
+    # Drop rows containing "exhibit" in text
+    df_final = df_final.filter(
+        ~pl.col("item_txt").str.to_lowercase().str.contains("exhibit")
+    )
+
+    # Drop empty texts
+    df_final = df_final.filter(
+        pl.col("item_txt")
+        .fill_null("")
+        .str.strip_chars()
+        .str.len_bytes() > 0
+    )
+
+    return df_final
+
+
+
+
+
+def get_iti_permno() -> set:
+    """
+    Return a Python set of unique permno values from the specified column.
+    """
+    # Collect unique values as a list, then convert to Python set
+    df = prepare_ITI_data()
+    unique_vals = df.select(pl.col("permno").unique()).to_series().to_list()
+    return set(unique_vals)
+
+
+
+def preprocess_sec_8k_nlp(item_to_parse: str = "8.01") -> pl.DataFrame:
+    """
+    Load, preprocess, map CIK to PERMNO, filter valid SEC 8-K filings,
+    parse a specific item (e.g., '2.02'), apply FinBERT sentiment,
+    and return a DataFrame ready for NLP analysis.
+    """
+
+    from pathlib import Path
+
+    output_dir = Path("data/preprocessed")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"item_{item_to_parse.replace('.', '_')}.parquet"
+
+    # ---------------------------------------------------
+    # Step 0: Load parquet if it already exists
+    # ---------------------------------------------------
+    if output_path.exists():
+        print(f"[INFO] Loading existing preprocessed file: {output_path}")
+        df_final = pl.read_parquet(str(output_path), try_parse_hive_dates=True)
+        return df_final
+
+    # ---------------------------------------------------
+    # Step 1: Load 8-K filings
+    # ---------------------------------------------------
+    df_8k = load_8k_filings()
+
+    df_8k = (
+        df_8k
+        .with_columns(
+            ((pl.col("filing_date") - pl.col("report_date"))
+             .dt.total_seconds() / 86400)
+            .alias("days_between_report_and_filing")
+            .cast(pl.Int32)
+        )
+        .filter(pl.col("report_date") >= pl.datetime(2004, 1, 1))
+        .with_columns(pl.col("report_date").dt.year().alias("report_year"))
+        .filter(pl.col("days_between_report_and_filing").is_between(1, 30))
+        .with_columns(pl.col("cik_int").cast(pl.Int32))
+    )
+
+    # ---------------------------------------------------
+    # Step 2: Map CIK to PERMNO
+    # ---------------------------------------------------
+    df_8k_with_permno = map_cik_to_permno(df_8k, cik_col="cik_int", date_col="filing_date")
+
+    # ---------------------------------------------------
+    # Step 3: Keep necessary columns
+    # ---------------------------------------------------
+    df_base = df_8k_with_permno.select([
+        "permno",
+        "filing_date",
+        "report_date",
+        "report_year",
+        "days_between_report_and_filing",
+        "url_txt",
+        "items"
+    ])
+
+    # filter only iti permno
+    iti_permno = get_iti_permno() # list of permno to keep
+    df_base = df_base.filter(pl.col("permno").is_in(iti_permno))
+    df_base = df_base.filter(
+        pl.col("report_date") < pl.datetime(2019, 12, 31)
+    )
+
+    # ---------------------------------------------------
+    # Step 4: Parse filings for the requested item
+    # ---------------------------------------------------
+    df_items = parse_item_8k_filings(
+        df_base,
+        item_to_parse=item_to_parse
+    )
+
+    if df_items.is_empty():
+        return pl.DataFrame({
+            "permno": [],
+            "filing_date": [],
+            "report_date": [],
+            "report_year": [],
+            "days_between_report_and_filing": [],
+            "url_txt": [],
+            "item_txt": [],
+            "sentiment_score": []
+        })
+
+    # ---------------------------------------------------
+    # Step 5: Merge parsed text with base dataframe
+    # ---------------------------------------------------
+    df_final = df_base.join(df_items, on="url_txt", how="inner")
+
+    # Step 6: Apply FinBERT sentiment
+    df_final = add_finbert_sentiment_score(df_final, text_col="item_txt")
+
+    # Step 7: Reorder columns
+    df_final = df_final.select([
+        "permno",
+        "filing_date",
+        "report_date",
+        "report_year",
+        "days_between_report_and_filing",
+        "sentiment_score",
+        "item_txt"
+    ])
+
+    # Step 8: Save parquet
+    df_final.write_parquet(str(output_path))
+
+    return df_final
+
+
+
+
+
+def add_finbert_sentiment_score(
+    df: pl.DataFrame,
+    text_col: str = "item_txt",
+    model_name: str = "ProsusAI/finbert",
+    batch_size: int = 32,
+    max_length: int = 256
+) -> pl.DataFrame:
+    """
+    Apply FinBERT and return a single sentiment_score = Positive - Negative.
+
+    Args:
+        df: Polars DataFrame containing at least `text_col`.
+        text_col: Column containing text.
+        model_name: HF FinBERT model.
+        batch_size: Batch size.
+        max_length: Token max length.
+
+    Returns:
+        df with new column `sentiment_score`
+    """
+
+    # Filter missing text
+    df = df.drop_nulls([text_col])
+    texts = df.get_column(text_col).to_list()
+    n = len(texts)
+
+    # Load model + tokenizer
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = AutoModelForSequenceClassification.from_pretrained(model_name, use_safetensors=True)
+
+    # Device
+    device = "cuda" if torch.cuda.is_available() else (
+        "mps" if torch.backends.mps.is_available() else "cpu"
+    )
+    model.to(device)
+    model.eval()
+
+    sentiment_scores = []
+
+    with torch.inference_mode():
+        for start in tqdm(range(0, n, batch_size), desc="FinBERT batches", unit="batch"):
+            batch_texts = texts[start:start+batch_size]
+
+            # Tokenize batch
+            inputs = tokenizer(
+                batch_texts,
+                padding=True,
+                truncation=True,
+                max_length=max_length,
+                return_tensors="pt"
+            )
+            inputs = {k: v.to(device) for k, v in inputs.items()}
+
+            # Model forward
+            outputs = model(**inputs)
+            probs = torch.nn.functional.softmax(outputs.logits, dim=-1).cpu().numpy()
+
+            # Compute Positive - Negative
+            score = probs[:, 2] - probs[:, 0]
+            sentiment_scores.extend(score)
+
+    # Add column
+    df_out = df.with_columns(
+        pl.Series("sentiment_score", sentiment_scores)
+    )
+
+    return df_out
+
+
+
 
 
 
