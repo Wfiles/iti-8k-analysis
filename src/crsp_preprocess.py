@@ -51,7 +51,7 @@ def collect_us_crsp_data(db):
 
     all_stocks = db.raw_sql(
         """
-        SELECT a.permno, a.date, a.ret, a.prc, a.vol,
+        SELECT a.permno, a.date, a.ret, a.prc, a.vol,a.shrout,
                n.comnam, n.shrcd, n.exchcd, n.ticker
         FROM crsp.dsf AS a
         JOIN crsp.stocknames AS n
