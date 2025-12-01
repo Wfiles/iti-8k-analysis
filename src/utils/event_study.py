@@ -227,3 +227,96 @@ def plot_report_vs_filing(results_report, results_filing):
 
     plt.tight_layout()
     plt.show()
+
+
+
+import numpy as np
+import polars as pl
+import pandas as pd
+
+np.random.seed(42)
+
+def make_random_events(df_events,
+                       crsp_path='./data/raw/crsp_daily_us.csv',
+                       buffer_days=60,
+                       n_random_per_event=1):
+    """
+    Generate placebo events:
+    - Same permnos as df_events
+    - For each real event, draw `n_random_per_event` random trading dates
+      for that permno.
+    - Exclude a +/- buffer_days window around *any* real event of that permno
+      so we don't accidentally pick true event periods.
+    
+    df_events: pandas DataFrame with ['permno','event_date'] (datetime)
+    """
+
+    df_events = df_events.copy()
+    df_events['event_date'] = pd.to_datetime(df_events['event_date'])
+    df_events['permno'] = df_events['permno'].astype(int)
+
+    unique_permnos = df_events['permno'].unique()
+
+    # Load CRSP dates for those permnos (only need permno + date)
+    crsp = (
+        pl.read_csv(crsp_path, columns=['permno','date'])
+          .filter(pl.col('permno').is_in(unique_permnos))
+    )
+    df_crsp = crsp.to_pandas()
+    df_crsp['date'] = pd.to_datetime(df_crsp['date'])
+    df_crsp['permno'] = df_crsp['permno'].astype(int)
+
+    # Precompute trading dates per permno
+    dates_by_permno = {
+        p: g['date'].sort_values().reset_index(drop=True)
+        for p, g in df_crsp.groupby('permno')
+    }
+
+    # Keep only events for permnos that actually exist in CRSP
+    available_permnos = set(dates_by_permno.keys())
+    df_events = df_events[df_events['permno'].isin(available_permnos)]
+    unique_permnos = df_events['permno'].unique()
+
+    # For each permno, build a set of "forbidden" dates around real events
+    forbidden = {}
+    for p in unique_permnos:
+        sub = dates_by_permno.get(p)
+        if sub is None or sub.empty:
+            # No trading dates for this permno -> skip
+            continue
+
+        ev_dates = df_events.loc[df_events['permno'] == p, 'event_date'].unique()
+        forbidden_dates = set()
+        for d in ev_dates:
+            lo = d - pd.Timedelta(days=buffer_days)
+            hi = d + pd.Timedelta(days=buffer_days)
+            # all trading days within [lo, hi]
+            mask = (sub >= lo) & (sub <= hi)
+            forbidden_dates.update(sub[mask].tolist())
+        forbidden[p] = forbidden_dates
+
+    # Now sample random dates per event
+    rows = []
+    for _, row in df_events.iterrows():
+        p = int(row['permno'])
+        if p not in dates_by_permno:
+            # Safety check, should already be filtered out above
+            continue
+
+        all_dates = dates_by_permno[p]
+
+        # allowed trading dates = all minus forbidden window
+        forb = forbidden.get(p, set())
+        allowed = all_dates[~all_dates.isin(list(forb))]
+        if allowed.empty:
+            # No admissible placebo date for this event
+            continue
+
+        # sample n_random_per_event dates (with replacement is fine for placebo)
+        sampled = np.random.choice(allowed.values, size=n_random_per_event, replace=True)
+
+        for d_rand in sampled:
+            rows.append({'permno': p, 'event_date': pd.to_datetime(d_rand)})
+
+    df_random_events = pd.DataFrame(rows).drop_duplicates()
+    return df_random_events
