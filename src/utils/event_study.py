@@ -198,7 +198,7 @@ def plot_caar_ci(agg, tau_col='tau', title='Cumulative Average Abnormal Returns 
 
 
 
-def plot_report_vs_filing(results_report, results_filing):
+def plot_x_vs_y(results_report, results_filing, x_title = '', y_title = ''):
     agg_rep = compute_caar_ci(results_report, tau_col='tau')
     agg_fil = compute_caar_ci(results_filing, tau_col='tau')
 
@@ -210,7 +210,7 @@ def plot_report_vs_filing(results_report, results_filing):
     ax.plot(agg_rep['tau'], agg_rep['mean_CAR'], lw=2)
     ax.axvline(0, linestyle='--')
     ax.axhline(0, linestyle=':', lw=1)
-    ax.set_title('CAAR around Report Date')
+    ax.set_title(x_title)
     ax.set_xlabel('τ (days)')
     ax.set_ylabel('CAAR')
     ax.grid(True, alpha=0.3)
@@ -221,7 +221,7 @@ def plot_report_vs_filing(results_report, results_filing):
     ax.plot(agg_fil['tau'], agg_fil['mean_CAR'], lw=2)
     ax.axvline(0, linestyle='--')
     ax.axhline(0, linestyle=':', lw=1)
-    ax.set_title('CAAR around Filing Date')
+    ax.set_title(y_title)
     ax.set_xlabel('τ (days)')
     ax.grid(True, alpha=0.3)
 
