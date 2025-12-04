@@ -590,7 +590,7 @@ def add_finbert_sentiment_score(
     text_col: str = "item_txt",
     model_name: str = "ProsusAI/finbert",
     batch_size: int = 32,
-    max_length: int = 256
+    max_length: int = 2048
 ) -> pl.DataFrame:
     """
     Apply FinBERT and return a single sentiment_score = Positive - Negative.

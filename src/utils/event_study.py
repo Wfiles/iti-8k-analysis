@@ -165,38 +165,52 @@ def compute_caar_ci(df, tau_col='tau'):
 
     return agg
 
+def plot_caar_ci(
+    agg,
+    tau_col='tau',
+    title='Cumulative Average Abnormal Returns (CAAR)',
+    subject='returns',
+    ax=None
+):
 
-def plot_caar_ci(agg, tau_col='tau', title='Cumulative Average Abnormal Returns (CAAR)', subject = 'returns'):
+    # Determine label
+    label = 'CAAR' if subject == 'returns' else 'Abnormal (ITI)'
 
-    if subject == 'returns' :
-        label = 'CAAR'
-    else : 
-        label = 'Abnormal (ITI)'
-    plt.figure(figsize=(9,5))
+    # If no axis provided, create a standalone figure (backward compatible)
+    created_fig = False
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(9, 5))
+        created_fig = True
 
-    plt.fill_between(
+    # Plot CI region
+    ax.fill_between(
         agg[tau_col], agg['ci_low'], agg['ci_high'],
         alpha=0.2, label='95% CI'
     )
-    plt.plot(
+
+    # Plot mean CAAR / mean CAR
+    ax.plot(
         agg[tau_col], agg['mean_CAR'],
         linewidth=2, label=label
     )
 
-    plt.axvline(0, linestyle='--')       # event date
-    plt.axhline(0, linestyle=':', lw=1)   # zero line
-    plt.xlabel("Event time τ (days)")
-    if subject == 'ITI' :
-        plt.ylabel("Abnormal (ITI)")
-    else :
-        plt.ylabel("CAAR")
-    plt.title(title)
-    plt.grid(True, alpha=0.3)
-    plt.legend()
-    plt.tight_layout()
-    plt.show()
+    # Event lines
+    ax.axvline(0, linestyle='--')
+    ax.axhline(0, linestyle=':', lw=1)
 
+    # Labels
+    ax.set_xlabel("Event time τ (days)")
+    ax.set_ylabel("Abnormal (ITI)" if subject == 'ITI' else "CAAR")
+    ax.set_title(title)
 
+    # Cosmetics
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+
+    # Only show when the function created the figure
+    if created_fig:
+        plt.tight_layout()
+        plt.show()
 
 def plot_x_vs_y(results_report, results_filing, x_title = '', y_title = ''):
     agg_rep = compute_caar_ci(results_report, tau_col='tau')
