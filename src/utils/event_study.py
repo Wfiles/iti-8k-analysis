@@ -37,7 +37,7 @@ def event_study(df_events,
     market_model : str
         Currently only 'fama-mom' is implemented.
     subject : str
-        'returns' or 'ITI' to specify which data to use for the event study.
+        'returns', 'ITI' or 'abs returns' to specify which data to use for the event study.
     """
 
     if market_model != 'fama-mom':
@@ -54,7 +54,12 @@ def event_study(df_events,
         returns = returns.filter(pl.col('permno').is_in(valid_permnos))
         df_returns = returns.to_pandas()[['permno', 'date', 'ret']]
         df_returns['date'] = pd.to_datetime(df_returns['date'])
-
+    elif subject == 'abs returns' :
+        returns = pl.read_csv('./data/raw/crsp_daily_us.csv')
+        returns = returns.filter(pl.col('permno').is_in(valid_permnos))
+        df_returns = returns.to_pandas()[['permno', 'date', 'ret']]
+        df_returns['date'] = pd.to_datetime(df_returns['date'])
+        df_returns['ret'] = df_returns['ret'].abs()
     elif subject == 'ITI' : 
         returns = pl.read_csv('./data/raw/ITIs.csv')
         returns = returns.filter(pl.col('permno').is_in(valid_permnos))
@@ -62,7 +67,7 @@ def event_study(df_events,
         df_returns = df_returns.rename(columns={'ITI(13D)':'ret'})
         df_returns['date'] = pd.to_datetime(df_returns['date'])
     else : 
-        raise ValueError("Subject must be either 'returns' or 'ITI'.")
+        raise ValueError("Subject must be either 'returns', 'abs returns' or 'ITI'.")
     
     # Load Fama-French + Momentum factors
     df_factors = pd.read_csv('./data/raw/ff_daily_factors.csv')
