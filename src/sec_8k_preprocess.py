@@ -5,6 +5,7 @@ import orjson
 import polars as pl
 from tqdm.auto import tqdm
 import re
+import numpy as np
 import requests
 from bs4 import BeautifulSoup as bs
 import pandas as pd
@@ -12,6 +13,8 @@ import unicodedata
 from pathlib import Path
 import torch
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
+from mistralai import Mistral
+from dotenv import load_dotenv
 
 from src.crsp_preprocess import connect_to_wrds
 from src.iti_preprocess import prepare_ITI_data
@@ -472,18 +475,21 @@ def get_iti_permno() -> set:
 
 
 
-def preprocess_sec_8k_nlp(item_to_parse: str = "8.01") -> pl.DataFrame:
+def preprocess_sec_8k_nlp(item_to_parse: str = "8.01", nlp_mode: str = "finbert") -> pl.DataFrame:
     """
     Load, preprocess, map CIK to PERMNO, filter valid SEC 8-K filings,
     parse a specific item (e.g., '2.02'), apply FinBERT sentiment,
     and return a DataFrame ready for NLP analysis.
+    Args:
+        item_to_parse: Item number to parse from filings (e.g., '8.01', '2.02').
+        nlp_mode: NLP mode, only 'finbert', 'finbert_mean_chunk' and 'mistral_summary_to_finbert' are supported.
     """
 
     from pathlib import Path
 
     output_dir = Path("data/preprocessed")
     output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / f"item_{item_to_parse.replace('.', '_')}.parquet"
+    output_path = output_dir / f"item_{item_to_parse.replace('.', '_')}_{nlp_mode}.parquet"
 
     # ---------------------------------------------------
     # Step 0: Load parquet if it already exists
@@ -563,7 +569,14 @@ def preprocess_sec_8k_nlp(item_to_parse: str = "8.01") -> pl.DataFrame:
     df_final = df_base.join(df_items, on="url_txt", how="inner")
 
     # Step 6: Apply FinBERT sentiment
-    df_final = add_finbert_sentiment_score(df_final, text_col="item_txt")
+    if nlp_mode == "finbert":
+        df_final = add_finbert_sentiment_score(df_final, text_col="item_txt")
+    elif nlp_mode == "finbert_mean_chunk":
+        df_final = add_finbert_mean_chunk_sentiment_score(df_final, text_col="item_txt")
+    elif nlp_mode == "mistral_summary_to_finbert":
+        df_final = add_mistral_summary_to_finbert_sentiment_score(df_final, text_col="item_txt", item=item_to_parse)
+    else:
+        raise ValueError(f"Unsupported nlp_mode: {nlp_mode}")
 
     # Step 7: Reorder columns
     df_final = df_final.select([
@@ -590,7 +603,7 @@ def add_finbert_sentiment_score(
     text_col: str = "item_txt",
     model_name: str = "ProsusAI/finbert",
     batch_size: int = 32,
-    max_length: int = 2048
+    max_length: int = 512
 ) -> pl.DataFrame:
     """
     Apply FinBERT and return a single sentiment_score = Positive - Negative.
@@ -652,6 +665,239 @@ def add_finbert_sentiment_score(
     )
 
     return df_out
+
+
+
+def add_finbert_mean_chunk_sentiment_score(
+    df: pl.DataFrame,
+    text_col: str = "item_txt",
+    model_name: str = "ProsusAI/finbert",
+    batch_size: int = 32,
+    chunk_size: int = 512
+) -> pl.DataFrame:
+    """
+    Apply FinBERT on long texts by chunking into 512-token segments.
+    Final sentiment_score = mean( Positive - Negative across chunks ).
+
+    Args:
+        df: Polars DataFrame containing at least text_col.
+        text_col: Column containing text.
+        model_name: HuggingFace model.
+        batch_size: Batch size for inference.
+        chunk_size: Max tokens per chunk (512 for BERT).
+
+    Returns:
+        df with new column sentiment_score.
+    """
+
+    # Remove nulls
+    df = df.drop_nulls([text_col])
+    texts = df.get_column(text_col).to_list()
+
+    # Load HF model and tokenizer
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = AutoModelForSequenceClassification.from_pretrained(model_name, use_safetensors=True)
+
+    # Device selection
+    device = "cuda" if torch.cuda.is_available() else (
+        "mps" if torch.backends.mps.is_available() else "cpu"
+    )
+    model.to(device)
+    model.eval()
+
+    scores_final = []
+
+    with torch.inference_mode():
+        for text in tqdm(texts, desc="FinBERT long-text sentiment"):
+
+            # Tokenize once to get IDs
+            encoded = tokenizer.encode(text, add_special_tokens=True)
+
+            # Split into chunks of 512 tokens
+            chunks = [
+                encoded[i:i + chunk_size]
+                for i in range(0, len(encoded), chunk_size)
+            ]
+
+            chunk_scores = []
+
+            # Process chunks in mini-batches
+            for start in range(0, len(chunks), batch_size):
+                batch_chunks = chunks[start:start+batch_size]
+
+                # Reconstruct inputs for each chunk
+                inputs = {
+                    key: [] for key in ["input_ids", "attention_mask"]
+                }
+
+                for ids in batch_chunks:
+                    # Rebuild inputs for each chunk
+                    out = tokenizer.prepare_for_model(
+                        ids,
+                        max_length=chunk_size,
+                        padding="max_length",
+                        truncation=True,
+                        return_attention_mask=True
+                    )
+                    inputs["input_ids"].append(out["input_ids"])
+                    inputs["attention_mask"].append(out["attention_mask"])
+
+                # Convert to tensor
+                inputs = {k: torch.tensor(v).to(device) for k, v in inputs.items()}
+
+                # Forward pass
+                logits = model(**inputs).logits
+                probs = torch.nn.functional.softmax(logits, dim=-1).cpu().numpy()
+
+                # Positive minus negative for each chunk
+                scores = probs[:, 2] - probs[:, 0]
+                chunk_scores.extend(scores)
+
+            # Score for full text = mean of chunk scores
+            scores_final.append(float(np.mean(chunk_scores)))
+
+    # Add output column
+    df_out = df.with_columns(
+        pl.Series("sentiment_score", scores_final)
+    )
+
+    return df_out
+
+
+
+
+
+def add_mistral_summary_to_finbert_sentiment_score(
+    df: pl.DataFrame,
+    text_col: str = "item_txt",
+    mistral_model: str = "mistral-large-latest",
+    finbert_model: str = "ProsusAI/finbert",
+    chunk_size: int = 512,
+    batch_size: int = 32,
+    summary_max_tokens: int = 512,
+    item: str = "8.01",
+    temp_file: str = "data/preprocessed/temp_mistral.parquet",
+    save_every_n: int = 20
+) -> pl.DataFrame:
+    """
+    Summarize each text using Mistral API, then apply FinBERT on the summary.
+    Supports incremental saving every `save_every_n` rows and resumes from temp_file if exists.
+    """
+
+    load_dotenv()
+    api_key = os.getenv("MISTRAL_API_KEY")
+    if api_key is None:
+        raise ValueError("MISTRAL_API_KEY not found in environment variables.")
+
+    # Filter missing text
+    df = df.drop_nulls([text_col])
+
+    # Check if temp file exists to resume
+    if os.path.exists(temp_file):
+        df_done = pl.read_parquet(temp_file)
+        processed_indices = set(df_done["index"].to_list())
+    else:
+        df_done = pl.DataFrame()
+        processed_indices = set()
+
+    # Keep track of indices
+    df = df.with_columns(pl.Series("index", range(df.height)))
+    df_to_process = df.filter(~pl.col("index").is_in(processed_indices))
+
+    if df_to_process.is_empty():
+        print("All rows already processed.")
+        return df_done
+
+    texts = df_to_process.get_column(text_col).to_list()
+    indices = df_to_process.get_column("index").to_list()
+
+    # Init Mistral client
+    client = Mistral(api_key=api_key)
+
+    # Load FinBERT
+    tokenizer_bert = AutoTokenizer.from_pretrained(finbert_model)
+    model_bert = AutoModelForSequenceClassification.from_pretrained(finbert_model, use_safetensors=True)
+
+    device = "cuda" if torch.cuda.is_available() else (
+        "mps" if torch.backends.mps.is_available() else "cpu"
+    )
+    model_bert.to(device)
+    model_bert.eval()
+
+    final_scores = []
+
+    for idx, text in tqdm(zip(indices, texts), total=len(texts), desc="Processing Mistral + FinBERT"):
+        # Summarization
+        prompt = (
+            f"You are summarizing a section extracted from a corporate SEC Form 8-K filing. "
+            f"This section corresponds to item {item}.\n\n{text}\n\n"
+            "Produce a concise and factual summary (3 to 5 sentences) that captures the key events, "
+            "decisions, financial impacts, risks or disclosures mentioned in the text. "
+            "Focus on information that materially affects the company’s business, performance or outlook. "
+            "Do not include any sentiment, opinion, interpretation, or speculation. "
+            "This summary will later be used as input to a separate sentiment analysis model, "
+            "so ensure the summary is neutral, factual, and captures all elements relevant for such an assessment."
+        )
+        response = client.chat.complete(
+            model=mistral_model,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=summary_max_tokens,
+            temperature=0
+        )
+        summary = response.choices[0].message.content
+
+        # Tokenize & chunk
+        encoded = tokenizer_bert.encode(summary, add_special_tokens=True)
+        chunks = [encoded[i:i + chunk_size] for i in range(0, len(encoded), chunk_size)]
+
+        chunk_scores = []
+
+        with torch.inference_mode():
+            for start in range(0, len(chunks), batch_size):
+                batch_chunks = chunks[start:start + batch_size]
+                inputs = {"input_ids": [], "attention_mask": []}
+                for ids in batch_chunks:
+                    out = tokenizer_bert.prepare_for_model(
+                        ids,
+                        max_length=chunk_size,
+                        padding="max_length",
+                        truncation=True,
+                        return_attention_mask=True
+                    )
+                    inputs["input_ids"].append(out["input_ids"])
+                    inputs["attention_mask"].append(out["attention_mask"])
+                inputs = {k: torch.tensor(v).to(device) for k, v in inputs.items()}
+                logits = model_bert(**inputs).logits
+                probs = torch.nn.functional.softmax(logits, dim=-1).cpu().numpy()
+                chunk_scores.extend(probs[:, 2] - probs[:, 0])
+
+        final_scores.append((idx, float(np.mean(chunk_scores))))
+
+        # Sauvegarde incrémentale
+        if len(final_scores) % save_every_n == 0:
+            df_tmp = pl.DataFrame({
+                "index": [i for i, _ in final_scores],
+                "sentiment_score": [s for _, s in final_scores]
+            })
+            if df_done.height > 0:
+                df_tmp = pl.concat([df_done, df_tmp])
+            df_tmp.write_parquet(temp_file)
+            df_done = df_tmp
+            final_scores = []
+
+    # Sauvegarde des derniers batchs restants
+    if final_scores:
+        df_tmp = pl.DataFrame({
+            "index": [i for i, _ in final_scores],
+            "sentiment_score": [s for _, s in final_scores]
+        })
+        if df_done.height > 0:
+            df_tmp = pl.concat([df_done, df_tmp])
+        df_tmp.write_parquet(temp_file)
+        df_done = df_tmp
+
+    # Retourne DF complet avec index
+    return df_done.sort("index").drop("index")
 
 
 
