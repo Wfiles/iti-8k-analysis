@@ -339,3 +339,47 @@ def make_random_events(df_events,
 
     df_random_events = pd.DataFrame(rows).drop_duplicates()
     return df_random_events
+
+
+def plot_corr_abn_iti_ar(results_returns :pd.DataFrame, results_iti : pd.DataFrame, title: str):
+    """
+    Plot correlation between abnormal ITI and abnormal returns at each event time τ.
+    """
+
+    results_iti.rename(columns={'AR': 'ITI_AR'}, inplace=True)
+    corr = results_returns.merge(
+        results_iti,
+        on=['permno','event_date','tau'],
+        how = 'inner')
+
+    corr_tau = (
+        corr.groupby("tau")[["AR", "ITI_AR"]]
+                .corr()
+                .iloc[0::2, -1]        
+                .reset_index()
+                .rename(columns={"ITI_AR": "corr"})
+    )
+
+    corr_tau = corr_tau[['tau', 'corr']]  
+
+    corr_tau.rename(columns={"ITI_AR": "corr"}, inplace=True)
+
+    corr_matrix = corr_tau.pivot_table(columns='tau', values='corr')
+    corr_matrix.index = ["corr(abnormal ITI, AR)"]
+
+    plt.figure(figsize=(14, 2.5))
+    sns.heatmap(
+        corr_matrix,
+        annot=True,
+        fmt=".3f",
+        cmap="coolwarm",
+        vmin=-0.079,
+        vmax=0.126,
+        center=0,
+        cbar_kws={'label': 'Correlation'}
+    )
+
+    plt.title(title)
+    plt.xlabel("Event Time τ")
+    plt.tight_layout()
+    plt.show()
