@@ -179,7 +179,7 @@ def plot_caar_ci(
 ):
 
     # Determine label
-    label = 'CAAR' if subject == 'returns' else 'Abnormal (ITI)'
+    label = 'CAAR' if subject == 'returns' else 'Average AI'
 
     # If no axis provided, create a standalone figure (backward compatible)
     created_fig = False
@@ -205,7 +205,7 @@ def plot_caar_ci(
 
     # Labels
     ax.set_xlabel("Event time τ (days)")
-    ax.set_ylabel("Abnormal (ITI)" if subject == 'ITI' else "CAAR")
+    ax.set_ylabel("Average AI" if subject == 'ITI' else "CAAR")
     ax.set_title(title)
 
     # Cosmetics
