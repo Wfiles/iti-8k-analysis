@@ -175,7 +175,9 @@ def plot_caar_ci(
     tau_col='tau',
     title='Cumulative Average Abnormal Returns (CAAR)',
     subject='returns',
-    ax=None
+    ax=None,
+    ylim=None,
+    save_as: str = None
 ):
 
     # Determine label
@@ -208,6 +210,10 @@ def plot_caar_ci(
     ax.set_ylabel("Average AI" if subject == 'ITI' else "CAAR")
     ax.set_title(title)
 
+    # Y-limits
+    if ylim is not None:
+        ax.set_ylim(ylim[0], ylim[1])
+
     # Cosmetics
     ax.grid(True, alpha=0.3)
     ax.legend()
@@ -215,6 +221,8 @@ def plot_caar_ci(
     # Only show when the function created the figure
     if created_fig:
         plt.tight_layout()
+        if save_as is not None:
+            plt.savefig(save_as, dpi=300)
         plt.show()
 
 def plot_x_vs_y(results_report, results_filing, x_title = '', y_title = ''):
@@ -341,9 +349,9 @@ def make_random_events(df_events,
     return df_random_events
 
 
-def plot_corr_abn_iti_ar(results_returns :pd.DataFrame, results_iti : pd.DataFrame, title: str):
+def plot_corr_abn_iti_ar(results_returns :pd.DataFrame, results_iti : pd.DataFrame, title: str, save_as: str = None):
     """
-    Plot correlation between abnormal ITI and abnormal returns at each event time τ.
+    Plot correlation between average AI and average AR at each event time τ.
     """
 
     results_iti.rename(columns={'AR': 'ITI_AR'}, inplace=True)
@@ -365,7 +373,7 @@ def plot_corr_abn_iti_ar(results_returns :pd.DataFrame, results_iti : pd.DataFra
     corr_tau.rename(columns={"ITI_AR": "corr"}, inplace=True)
 
     corr_matrix = corr_tau.pivot_table(columns='tau', values='corr')
-    corr_matrix.index = ["corr(abnormal ITI, AR)"]
+    corr_matrix.index = ["corr(average AI, average AR)"]
 
     plt.figure(figsize=(14, 2.5))
     sns.heatmap(
@@ -373,8 +381,8 @@ def plot_corr_abn_iti_ar(results_returns :pd.DataFrame, results_iti : pd.DataFra
         annot=True,
         fmt=".3f",
         cmap="coolwarm",
-        vmin=-0.079,
-        vmax=0.126,
+        vmin=-0.181,
+        vmax=0.204,
         center=0,
         cbar_kws={'label': 'Correlation'}
     )
@@ -382,4 +390,6 @@ def plot_corr_abn_iti_ar(results_returns :pd.DataFrame, results_iti : pd.DataFra
     plt.title(title)
     plt.xlabel("Event Time τ")
     plt.tight_layout()
+    if save_as is not None:
+        plt.savefig(save_as, dpi=300)
     plt.show()
