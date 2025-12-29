@@ -38,7 +38,7 @@ data/
 data/*.csv
 data/*.tsv
 data/*.zip
-data/*.parquet
+
 data/*.h5
 data/preprocessed/submissions_8k.parquet
 
