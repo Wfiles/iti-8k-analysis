@@ -1,28 +1,27 @@
-> **Note:** The project report is located in `pdfs/Semester_project_proposal.pdf`.
+# Insider Trading Intensity and Abnormal Returns Around 8-K Filings
 
-# [cite_start]Enhancing News-Based Asset Pricing with Information-Driven Trading Signals [cite: 3]
+## Project Overview
+This repository contains the Master Semester Project report for the Data Science program at EPFL (Autumn Semester 2025). Supervised by Prof. Pierre Collin-Dufresne, this research investigates how Informative Trading Intensity (ITI) interacts with corporate disclosures through SEC Form 8-K filings. The project aims to separate pre-disclosure informed trading from post-disclosure market reactions by analyzing both report dates and public filing dates.
 
-## Overview
-[cite_start]This repository outlines a Data Science Master's research project (COM-412) at EPFL for the Autumn Semester 2025[cite: 1, 2, 10, 12]. [cite_start]The project aims to investigate whether incorporating information-driven trading (ITI) can enhance the predictive power of news-augmented asset pricing models[cite: 13].
+## Authors
+* **Matthias Wyss** 
+* **William Jallot** 
 
 ## Methodology
-* [cite_start]The project will unite two information channels by combining an embedding model, such as FinBERT, to create news embeddings with ITI scores[cite: 19].
-* [cite_start]Each news signal will be weighted according to the level of informed trading that precedes it[cite: 19].
-* [cite_start]The team will explore embedding the ITI metric directly into the representation so that a headline's impact is automatically scaled by the prevailing level of informed trading[cite: 20].
+The study combines market microstructure metrics with Natural Language Processing (NLP) to evaluate asset pricing and trading behavior:
+* **Event Studies:** Conducted event studies to measure Cumulative Average Abnormal Returns (CAAR), Abnormal ITI, and Absolute Returns around 8-K disclosure dates.
+* **Item Decomposition:** Separated 8-K filings by their specific item composition to assess how different corporate events (e.g., financial results vs. director appointments) drive trading behavior.
+* **NLP & Sentiment Analysis:** Focused on free-text Item 8.01 ("Other Events") disclosures to compute sentiment scores. The team tested three approaches: direct FinBERT processing, chunk-based FinBERT averaging, and Mistral LLM summarization followed by FinBERT scoring.
 
-## Team & Responsibilities
-* [cite_start]**Matthias Wyss**: Primarily handles the natural language processing component[cite: 5, 23]. [cite_start]This includes collecting financial news data, generating text embeddings using models such as FinBERT, and developing baseline pricing models that incorporate these embeddings[cite: 23].
-* [cite_start]**William Jallot**: Focuses on the market microstructure dimension[cite: 5, 24]. [cite_start]This involves working with microstructural data to compute ITI scores based on established methodologies, or potentially extending or refining the metric[cite: 24].
-* [cite_start]Both team members will collaborate closely on model integration, experimental design, and the incorporation of traditional factor models[cite: 26].
+## Key Findings
+* **Information Leakage:** Abnormal ITI exhibits a pronounced spike immediately after the report date and begins to rise slightly before the event date, suggesting rumors or information leakage prior to public filing.
+* **Event Heterogeneity:** Economically material disclosures—such as entry into definitive agreements (Item 1.01) and results of operations (Item 2.02) show strong increases in ITI prior to disclosure. In contrast, corporate governance updates (Items 5.02 and 5.07) show little to no abnormal ITI.
+* **Volatility Spikes:** Absolute abnormal returns spike sharply at the disclosure date, indicating a sudden increase in market volatility and activity when new information is released.
+* **Sentiment Predictability:** Combining Mistral-based summarization with FinBERT sentiment scoring successfully separates return dynamics, capturing economically relevant information better than simple raw-text approaches. 
+* **ITI Nature:** While sentiment strongly impacts return direction, ITI behaves similarly across all sentiment groups, indicating that it is a measure of information intensity rather than a directional predictor of returns.
 
-## Preliminary Data Sources
-[cite_start]The analysis will utilize several datasets, which will be expanded as the project progresses[cite: 28, 29]:
-* [cite_start]Reuters financial news from 2006 to 2013 [cite: 30]
-* [cite_start]Bloomberg and Reuters dataset [cite: 31]
-* [cite_start]FNSPID [cite: 32]
-* [cite_start]Nifty [cite: 33]
-* [cite_start]FinSen [cite: 34]
-* [cite_start]SEntFiN [cite: 35]
+## Repository & Data
+The datasets generated during this project—including the merged 8-K ITI dataset and the preprocessed NLP sentiment datasets—are publicly available in the project's GitHub repository at `https://github.com/Wfiles/iti-8k-analysis`.
 ## Project Structure
 
 ```
