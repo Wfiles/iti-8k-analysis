@@ -1,8 +1,9 @@
-# news-based-asset-pricing
+> **Note:** The project report is located in `pdfs/Semester_project_proposal.pdf`.
+
 # [cite_start]Enhancing News-Based Asset Pricing with Information-Driven Trading Signals [cite: 3]
 
 ## Overview
-[cite_start]This repository outlines a Data Science Master's research project (COM-412) at EPFL for the Autumn Semester 2025[cite: 1, 2, 6, 10, 12]. [cite_start]The project aims to investigate whether incorporating information-driven trading (ITI) can enhance the predictive power of news-augmented asset pricing models[cite: 13].
+[cite_start]This repository outlines a Data Science Master's research project (COM-412) at EPFL for the Autumn Semester 2025[cite: 1, 2, 10, 12]. [cite_start]The project aims to investigate whether incorporating information-driven trading (ITI) can enhance the predictive power of news-augmented asset pricing models[cite: 13].
 
 ## Methodology
 * [cite_start]The project will unite two information channels by combining an embedding model, such as FinBERT, to create news embeddings with ITI scores[cite: 19].
@@ -16,13 +17,12 @@
 
 ## Preliminary Data Sources
 [cite_start]The analysis will utilize several datasets, which will be expanded as the project progresses[cite: 28, 29]:
-* [cite_start]Reuteurs financial news from 2006 to 2013 [cite: 30]
+* [cite_start]Reuters financial news from 2006 to 2013 [cite: 30]
 * [cite_start]Bloomberg and Reuters dataset [cite: 31]
 * [cite_start]FNSPID [cite: 32]
 * [cite_start]Nifty [cite: 33]
 * [cite_start]FinSen [cite: 34]
 * [cite_start]SEntFiN [cite: 35]
-* 
 ## Project Structure
 
 ```
