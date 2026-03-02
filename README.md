@@ -1,5 +1,28 @@
 # news-based-asset-pricing
+# [cite_start]Enhancing News-Based Asset Pricing with Information-Driven Trading Signals [cite: 3]
 
+## Overview
+[cite_start]This repository outlines a Data Science Master's research project (COM-412) at EPFL for the Autumn Semester 2025[cite: 1, 2, 6, 10, 12]. [cite_start]The project aims to investigate whether incorporating information-driven trading (ITI) can enhance the predictive power of news-augmented asset pricing models[cite: 13].
+
+## Methodology
+* [cite_start]The project will unite two information channels by combining an embedding model, such as FinBERT, to create news embeddings with ITI scores[cite: 19].
+* [cite_start]Each news signal will be weighted according to the level of informed trading that precedes it[cite: 19].
+* [cite_start]The team will explore embedding the ITI metric directly into the representation so that a headline's impact is automatically scaled by the prevailing level of informed trading[cite: 20].
+
+## Team & Responsibilities
+* [cite_start]**Matthias Wyss**: Primarily handles the natural language processing component[cite: 5, 23]. [cite_start]This includes collecting financial news data, generating text embeddings using models such as FinBERT, and developing baseline pricing models that incorporate these embeddings[cite: 23].
+* [cite_start]**William Jallot**: Focuses on the market microstructure dimension[cite: 5, 24]. [cite_start]This involves working with microstructural data to compute ITI scores based on established methodologies, or potentially extending or refining the metric[cite: 24].
+* [cite_start]Both team members will collaborate closely on model integration, experimental design, and the incorporation of traditional factor models[cite: 26].
+
+## Preliminary Data Sources
+[cite_start]The analysis will utilize several datasets, which will be expanded as the project progresses[cite: 28, 29]:
+* [cite_start]Reuteurs financial news from 2006 to 2013 [cite: 30]
+* [cite_start]Bloomberg and Reuters dataset [cite: 31]
+* [cite_start]FNSPID [cite: 32]
+* [cite_start]Nifty [cite: 33]
+* [cite_start]FinSen [cite: 34]
+* [cite_start]SEntFiN [cite: 35]
+* 
 ## Project Structure
 
 ```
