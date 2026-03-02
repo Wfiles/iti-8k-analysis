@@ -1,5 +1,5 @@
 # Insider Trading Intensity and Abnormal Returns Around 8-K Filings
-
+## 📄 The main project report PDF is called `Project_report.pdf`
 ## Project Overview
 This repository contains the Master Semester Project report for the Data Science program at EPFL (Autumn Semester 2025). Supervised by Prof. Pierre Collin-Dufresne, this research investigates how Informative Trading Intensity (ITI) interacts with corporate disclosures through SEC Form 8-K filings. The project aims to separate pre-disclosure informed trading from post-disclosure market reactions by analyzing both report dates and public filing dates.
 
